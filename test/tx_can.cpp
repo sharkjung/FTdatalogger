@@ -3,15 +3,15 @@
 //o padrão da FuelTech
 
 void setup() {
-  Serial.begin(9600);
-  if(!CAN.begin(500E3)){ //Se mantém aqui até inicializar a comunicação CAN
+  Serial.begin(115200);
+  if(!CAN.begin(1E6)){ //Se mantém aqui até inicializar a comunicação CAN
     while(1);
   }
 
 }
 
 void loop() {
-  int dado=10,
+  uint8_t dado = 0,
   productID = 0x0001, //15 bits 
   /*
   Na EGT-4 eu acho que usaremos esse código 
@@ -35,15 +35,17 @@ void loop() {
   ID = (productID<<14)|(datafield<<11)|(messageID);
    //O ID é segmentado em partes, irei fazer a composição com operações de OR bit a bit, mais didatico (pra mim rs)
   //fazer deslocamento de bits a esquerda e fazer OR com o que se deseja inserir atrás
-  Serial.println("Enviando---");
+  while(1){
+    Serial.println("Enviando---");
 
-  CAN.beginExtendedPacket(ID); //Começa o pacote informando o seu ID que terá 29bits
-  
-  CAN.write(dado);//1 byte
-  
-  CAN.endPacket();//informa que pacote foi finalizado
-  
-  Serial.println("--->Pacote enviado");
+    CAN.beginExtendedPacket(ID); //Começa o pacote informando o seu ID que terá 29bits
+    
+    CAN.write(dado++);//1 byte
+    
+    CAN.endPacket();//envia pacote
+    
+    Serial.println("--->Pacote enviado");
 
-  delay(1000); //Tempo entre envio de pacotes
+    delay(100); //Tempo entre envio de pacotes
+  }
 }
