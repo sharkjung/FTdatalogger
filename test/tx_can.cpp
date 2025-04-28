@@ -11,19 +11,22 @@ void setup() {
 }
 
 void loop() {
-  uint8_t dado = 0,
-  productID = 0x0001, //15 bits 
+  uint8_t dado = 0;
+  uint16_t productID = 0x2001;
+  uint8_t dataFieldID = 0x2;
+  uint16_t messageID = messageID = 0x0FF;
+  
   /*
   Na EGT-4 eu acho que usaremos esse código 
   0x0900 FuelTech EGT-4 CAN (model A)
   */
 
-  datafield = 0x00, //3 bits
+ //3 bits
   /*
      0x00 indica que os dados sao do tipo: Standard CAN data field
   */
 
-  messageID = 0x0FF, //11 bits 
+ //11 bits 
   /*
   Em message ID:
   0x0FF – Critical priority
@@ -32,20 +35,25 @@ void loop() {
   0x3FF – Low priority
   */
 
-  ID = (productID<<14)|(datafield<<11)|(messageID);
-   //O ID é segmentado em partes, irei fazer a composição com operações de OR bit a bit, mais didatico (pra mim rs)
+  uint32_t ID = ((productID<<14)|(dataFieldID<<11)|(messageID)) & 0x1FFFFFFF;
+  //O ID é segmentado em partes, irei fazer a composição com operações de OR bit a bit, mais didatico (pra mim rs)
   //fazer deslocamento de bits a esquerda e fazer OR com o que se deseja inserir atrás
-  while(1){
-    Serial.println("Enviando---");
+  Serial.println("Enviando---");
+  Serial.println(ID, HEX);
+  Serial.println(dataFieldID, HEX);
+  Serial.println(messageID, HEX);
+  Serial.println(productID, HEX);
 
-    CAN.beginExtendedPacket(ID); //Começa o pacote informando o seu ID que terá 29bits
+  CAN.beginExtendedPacket(ID); //Começa o pacote informando o seu ID que terá 29bits
     
-    CAN.write(dado++);//1 byte
+  CAN.write(dado);//1 byte
+  CAN.write(dado++);
+  CAN.write(dado++);
+  CAN.write(dado++);
     
-    CAN.endPacket();//envia pacote
+  CAN.endPacket();//envia pacote
     
-    Serial.println("--->Pacote enviado");
+  Serial.println("--->Pacote enviado");
 
-    delay(100); //Tempo entre envio de pacotes
-  }
+  delay(2000); //Tempo entre envio de pacotes
 }

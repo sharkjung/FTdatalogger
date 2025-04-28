@@ -19,9 +19,6 @@
 #include <CAN.h>
 
 //ids de interesse da FT
-//uint32_t é um tipo de 32 bits, o pacote extendido de ID de 29 bits
-//"signed integer type with width of exactly 8, 16, 32 and 64 bits respectively
-// with no padding bits and using 2's complement for negative values"
 const uint32_t ft550_ids[] = {
   0x0CFF0500,
   0x0CFF0600,
@@ -31,20 +28,22 @@ const uint32_t ft550_ids[] = {
 // num_ids = tamanho de ft550_ids[]
 const int num_ids = sizeof(ft550_ids) / sizeof(ft550_ids[0]);
 
-#define BUFFER_SIZE 10  // Tamanho do buffer, não pensei em um critério pra esse número
-struct CANFrame { //struct para um pacote, não utilizei o nome "pacote" por ambiguidade com a biblioteca
+#define BUFFER_SIZE 10  // Tamanho do buffer, ainda não há um critério para esse número
+struct CANFrame { //struct para um frame
   unsigned long timeLog;
-  uint32_t id;
-  byte data[8]; //conteúdo
+  // divisões id protocolo ft
+  uint16_t productID;
+  uint8_t dataFieldID;
+  uint16_t messageID;
+  byte data[8]; //mensagem
   uint8_t dlc; //tamanho do conteúdo (Data Length Code)
 };
 
-//Buffer é uma array que salva os pacotes e depois os envia todos de uma vez, ainda vou explicar o porquê disso
+// BUFFER para que os pacotes sejam escritos ao mesmo tempo reduzindo sobrecarga
 CANFrame buffer[BUFFER_SIZE];
 int bufferIndex = 0;
 
-//Função que verifica se os pacotes são de interesse, talvez isso seja um 
-//pouco desnecessário e atrase um pouco a execução
+//Função que verifica se os pacotes são de interessem, inutilizado
 bool is_ft550_id(uint32_t id) {
   return true;
   /*for (int i = 0; i < num_ids; i++) {
@@ -53,27 +52,18 @@ bool is_ft550_id(uint32_t id) {
   return false;*/
 }
 
-//função para enviar os dados do buffer
-//eu acho que enviar um pacote de cada vez leva mais tempo do que enviar vários de uma só vez.
-//com mais pacotes enviados de uma só vez acho q maior o tempo, daí talvez um critério para BUFFER_SIZE
-//o problema é que quando o programa está enviando para o monitor ou escrevendo no cartão sd um pacote
-//podem chegar outros pacotes no buffer do tansceiver, que se não me engano aguenta no máximo dois pacotes,
-//e se vierem mais do que dois durante esse tempo um dos pacotes sera sobrescrito e haverá perca de dados.
-//essa questão do tempo eu não sei se é essencial para o projeto e é algo que carece de testes cronometrados
+
 //o controlador can até lida com sobrecarga, mas isso atrasa a rede, a questão é que a rede pelo o que eu entendo
 //é apenas a ft e o esp, será que realmente é um problema atrasar a rede?
 void sendBufferData() {
   for (int i = 0; i < bufferIndex; i++) {
-    Serial.print(" ms | ID(0x) | Data");
-    //millis é de qnd estava sem o buffer, aqui ele fica assíncrono (na vdd, eu acredito q não tenha
-    //como ao certo saber o tempo exato q os pacotes chegam, mas claro q estaria em um desvio aceitável)
-    //se for essencial o tempo, existem soluções
     Serial.print(buffer[i].timeLog); Serial.print(", ");
-    Serial.print(buffer[i].id, HEX); Serial.print(", ");
-    //itera pelo buffer e pela mensagem do pacote
+    Serial.print(buffer[i].productID, HEX); Serial.print(", ");
+    Serial.print(buffer[i].dataFieldID, HEX); Serial.print(", ");
+    Serial.print(buffer[i].messageID, HEX); Serial.print(", ");
+
     for (int j = 0; j < buffer[i].dlc; j++) {
       Serial.print(" "); Serial.print(buffer[i].data[j], HEX);
-      //eu preciso ler o protocolo da FT, pra deixar essas mensagens inteligíveis, isso vai ser um saco de implementar 
     }
     Serial.println();
   }
@@ -97,33 +87,30 @@ void setup() {
 }
 
 void loop() {
-  //tenta pegar um pacote
   int packetSize = CAN.parsePacket();
 
-  if (packetSize) { //se não recebeu um pacote, o valor de packetsize seria zero
+  if (packetSize) {
     uint32_t id = CAN.packetId();
     //salva pacote
     if (is_ft550_id(id)) {
       CANFrame newFrame;
+    
       newFrame.timeLog = millis();
-      newFrame.id = id;
+      newFrame.productID = id >> 14;
+      newFrame.dataFieldID = (id >> 11) & 0x06;
+      newFrame.messageID = id & 0x07FF;
       newFrame.dlc = packetSize;
       
-      // only print packet data for non-RTR packets
-      // acho que nunca é RTR
-      // available retorna true até que os 8 bytes do conteúdo sejam todos iterados
       int i = 0;
       while (CAN.available()) {
         newFrame.data[i++] = CAN.read();
       }
 
       //adiciona o pacote ao buffer
-      if (bufferIndex < BUFFER_SIZE || (millis() - lastSendTime) < maxWaitTime) {
+      if (bufferIndex < BUFFER_SIZE & (millis() - lastSendTime) < maxWaitTime) {
         buffer[bufferIndex++] = newFrame;
+      
       } else {
-        //buffer cheio, envia e reinicia; também vou colocar um critério de tempo, 
-        //para que o buffer não guarde menos de BUFFER_SIZE pacotes por tempo indefinido
-        //se o buffer estiver vazio após
         sendBufferData();
         lastSendTime = millis();
         //envia e depois guarda o pacote q não coube
