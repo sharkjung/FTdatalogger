@@ -59,8 +59,8 @@ void loop() {
         client.println("<!DOCTYPE html><html>");
         
         client.println("<head><title>Dados fueltech</title>");
-        client.println("<meta http-equiv='refresh'>"); //Recarega a página uma única vez
-        client.println("<style>"); 
+        client.println("<meta http-equiv='refresh'>"); //Recarega a página uma única vez,mas como esse código será uma função que será
+        client.println("<style>");                     //repetidamente chamada, não há problemas
         client.println("body {");
         client.println("  display: flex;");
         client.println("  justify-content: center;");
@@ -90,7 +90,7 @@ void loop() {
 
         String str = trata_dados(data); //Faz tratamento dos dados recebidos pela função 
        
-        client.print(str);  // Dado recebido enviado a pagina formatado
+        client.print(str);  // Dado recebido enviado à pagina já formatado
 
         client.println("</p>");
         client.println("</div>");
