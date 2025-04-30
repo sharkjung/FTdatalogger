@@ -1,59 +1,35 @@
-#include <CAN.h> //Biblioteca de comunicação CAN
-//Pacote enviado deve ser do tipo estendido, mas sua configuração de dados presentes no ID deverá seguir 
-//o padrão da FuelTech
+#include <CAN.h>
 
 void setup() {
   Serial.begin(115200);
-  if(!CAN.begin(1E6)){ //Se mantém aqui até inicializar a comunicação CAN
+  if(!CAN.begin(1E6)){ // 1Mbps
     while(1);
   }
+  randomSeed(analogRead(0)); 
 
 }
 
+/* A função loop() está repetidamente enviando pacotes simples de dados e IDs permitidos aleatórios,
+   na tentativa de simular parcialmente o comportamento real da ECU. 
+*/
 void loop() {
-  uint8_t dado = 0;
-  uint16_t productID = 0x2001;
-  uint8_t dataFieldID = 0x2;
-  uint16_t messageID = messageID = 0x0FF;
-  
-  /*
-  Na EGT-4 eu acho que usaremos esse código 
-  0x0900 FuelTech EGT-4 CAN (model A)
-  */
+  int r = random(0, 8);
+  uint32_t id = 0x14080600 + r;
 
- //3 bits
-  /*
-     0x00 indica que os dados sao do tipo: Standard CAN data field
-  */
-
- //11 bits 
-  /*
-  Em message ID:
-  0x0FF – Critical priority
-  0x1FF – High priority
-  0x2FF – Medium priority
-  0x3FF – Low priority
-  */
-
-  uint32_t ID = ((productID<<14)|(dataFieldID<<11)|(messageID)) & 0x1FFFFFFF;
-  //O ID é segmentado em partes, irei fazer a composição com operações de OR bit a bit, mais didatico (pra mim rs)
-  //fazer deslocamento de bits a esquerda e fazer OR com o que se deseja inserir atrás
   Serial.println("Enviando---");
-  Serial.println(ID, HEX);
-  Serial.println(dataFieldID, HEX);
-  Serial.println(messageID, HEX);
-  Serial.println(productID, HEX);
+  Serial.println(id, HEX);
 
-  CAN.beginExtendedPacket(ID); //Começa o pacote informando o seu ID que terá 29bits
+  CAN.beginExtendedPacket(id); 
     
-  CAN.write(dado);//1 byte
-  CAN.write(dado++);
-  CAN.write(dado++);
-  CAN.write(dado++);
-    
-  CAN.endPacket();//envia pacote
-    
-  Serial.println("--->Pacote enviado");
+  for(int i = 0; i < 8; i++){
+    byte data = random(0, 255);
+    CAN.write(data);
+    Serial.print(data);
+    Serial.print(" ");
+  }
 
-  delay(2000); //Tempo entre envio de pacotes
+  if(CAN.endPacket()){
+  Serial.println("\n--->Pacote enviado");
+  }
+  delay(10); //~100Hz
 }

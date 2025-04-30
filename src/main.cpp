@@ -4,21 +4,26 @@
 #include "SD.h"
 #include "SPI.h"
 
-/*
-Uncomment and set up if you want to use custom pins for the SPI communication
 #define REASSIGN_PINS
-int sck = -1;
-int miso = -1;
-int mosi = -1;
-int cs = -1;
-int rx = -1;
-int tx = -1;
-*/
+int sck = 18;
+int miso = 19;
+int mosi = 23;
+int cs = 5;
+int rx = 22;
+int tx = 21;
 
 #define LED 2
 #define BUFFER_SIZE 10
 
-//================== SD ==================
+unsigned long lastSendTime = 0;
+const unsigned long maxWaitTime = 1000;
+char newFileName[32];
+
+//================== INÍCIO SD ==================
+
+/* Liberação de espaço no SD; sendo o espaço a ser liberado passado como um argumento.
+   Função é chamada no setup() quando não há um quantidade pré-determinada 
+   (10MiB, atualmente) de espaço livre no SD */
 bool freeSpace(fs::SDFS &fs, const char *dirname, uint8_t minFree, uint64_t &freeSpace) {
   if (freeSpace >= minFree) {
     return true;
@@ -53,6 +58,7 @@ bool freeSpace(fs::SDFS &fs, const char *dirname, uint8_t minFree, uint64_t &fre
   return freeSpace >= minFree;
 }
 
+/* Função de criação e escrita de um arquivo */
 void writeFile(fs::FS &fs, const char *path, const char *message) {
   File file = fs.open(path, FILE_WRITE);
   if (!file) {
@@ -62,6 +68,7 @@ void writeFile(fs::FS &fs, const char *path, const char *message) {
   file.close();
 }
 
+/* Função de escrita a um arquivo já existente */
 void appendFile(fs::FS &fs, const char *path, const char *message) {
   File file = fs.open(path, FILE_APPEND);
   if (!file) {
@@ -71,6 +78,10 @@ void appendFile(fs::FS &fs, const char *path, const char *message) {
   file.close();
 }
 
+/* Função que retorna o nome que deve ser númerico do último arquivo criado
+   Os arquivos são todos numerados sequencialmente com base na sua criação,
+   isso permite que os arquivos de menor número (os mais antigos), sejam deletados
+   primeiros do microSD quando não houver o espaço livre definido. */
 uint32_t getLastFileNumber(fs::FS &fs, const char *dirname) {
   File root = fs.open(dirname);
   if (!root || !root.isDirectory()) {
@@ -82,7 +93,7 @@ uint32_t getLastFileNumber(fs::FS &fs, const char *dirname) {
   File file = root.openNextFile();
   while (file) {
       String name = String(file.name());
-      name = name.substring(0, name.indexOf('.')); //remove extensão
+      name = name.substring(0, name.indexOf('.'));
       uint32_t number = name.toInt();
       if (number > lastNumber) {
         lastNumber = number;
@@ -94,9 +105,18 @@ uint32_t getLastFileNumber(fs::FS &fs, const char *dirname) {
   
   return lastNumber;
 }
-//================== SD ==================
+//================== FIM SD ==================
 
-//ids de interesse da FT
+
+//================== INÍCIO CAN ==================
+
+/* Atualmente o programa só decodifica pacotes com esses IDs, que são os pacotes
+   simplificados da FT, já que a decodificação do protocolo CAN FT é muito complexa
+   e talvez nem ideal para um ESP32, já que provavelmente gastaria processamento que
+   deveria ser utilizado para receber mensagens brutas.
+   Apesar da especificidade, o programa está suficientemente versátil para uma implementação, 
+   sem muito atrito, de lógica de decodificação para outros tipos de pacotes.
+   */
 const uint32_t ft550_ids[] = {
   0x14080600,
   0x14080601,
@@ -111,18 +131,24 @@ const uint32_t ft550_ids[] = {
 
 const int num_ids = sizeof(ft550_ids) / sizeof(ft550_ids[0]);
 
+/* Struct que facilita o processamento dos pacotes
+   */
 struct CANFrame {
   unsigned long timeLog;
   uint32_t id;
-  byte data[8]; //mensagem
-  uint8_t dlc; //tamanho do conteúdo (Data Length Code)
+  byte data[8];
+  uint8_t dlc; //Atualmente, inutilizado
 };
 
-// BUFFER para que os pacotes sejam escritos ao mesmo tempo reduzindo sobrecarga
+/* Buffer utilizado para mitigar problemas de sobrecarga, a ideia é que o envio/escrita
+   de um frame utilize mais processamento relativo ao envio/escrita de um conjunto de
+   frames ao mesmo tempo.
+*/
 CANFrame buffer[BUFFER_SIZE];
 int bufferIndex = 0;
 
-//Função que verifica se os pacotes são de interesse
+/* Função que filtra os pacotes de interesse
+*/
 bool is_ft550_id(uint32_t id) {
   return true;
   for (int i = 0; i < num_ids; i++) {
@@ -130,14 +156,18 @@ bool is_ft550_id(uint32_t id) {
   }
   return false;
 }
-
+/* Função de decodificação dos payloads; é utilizado um objeto do tipo String de tamanho
+   pré-definido, para que não haja a realocação e o redimensionamento deste objeto durante
+   a decodificação. É essencial minimizar o tempo gasto na decodificação e envio/escrita, 
+   pois novos pacotes que são recebidos pelo controlador podem ser perdidos nesse meio-tempo.
+*/
 String messageFormatting(uint8_t id, const uint8_t *data){ 
   String msg;
   msg.reserve(128);
     
   switch (id) {
     case 0:
-      msg += "TPS(%)|MAP(BAR)|AirTemp|EngineTemp(°C):";
+      msg += "TPS(%)|MAP(BAR)|AirTemp|EngineTemp(C): ";
       msg += String((data[0] << 8 | data[1]) / 10.0) + ",";
       msg += String(uint16_t(data[2] << 8 | data[3]) / 1000.0) + ",";
       msg += String((int16_t)(data[4] << 8 | data[5]) / 10.0) + ",";
@@ -145,7 +175,7 @@ String messageFormatting(uint8_t id, const uint8_t *data){
       break;
     
     case 1:
-      msg += "OilPressure|FuelPressure|WaterPressure(BAR)|Gear:";
+      msg += "OilPressure|FuelPressure|WaterPressure(BAR)|Gear: ";
       msg += String(uint16_t(data[0] << 8 | data[1]) / 1000.0) + ",";
       msg += String(uint16_t(data[2] << 8 | data[3]) / 1000.0) + ",";
       msg += String(uint16_t(data[4] << 8 | data[5]) / 1000.0) + ",";
@@ -153,7 +183,7 @@ String messageFormatting(uint8_t id, const uint8_t *data){
       break;
     
     case 2:
-      msg += "ExhaustO2(ƛ)|RPM|OilTemp(°C)|PitLimit:"; 
+      msg += "ExhaustO2(ƛ)|RPM|OilTemp(C)|PitLimit: "; 
       msg += String((uint16_t)(data[0] << 8 | data[1]) / 1000.0) + ",";
       msg += String((uint16_t)(data[2] << 8 | data[3])) + ",";
       msg += String((int16_t)(data[4] << 8 | data[5]) / 10.0) + ",";
@@ -161,7 +191,7 @@ String messageFormatting(uint8_t id, const uint8_t *data){
       break;
 
     case 3:
-      msg += "Wheel Speed(Km/h) FR|FL|RR|RL:";
+      msg += "Wheel Speed(Km/h) FR|FL|RR|RL: ";
       msg += String((data[0] << 8 | data[1])) + ",";
       msg += String((data[2] << 8 | data[3])) + ",";
       msg += String((data[4] << 8 | data[5])) + ",";
@@ -169,7 +199,7 @@ String messageFormatting(uint8_t id, const uint8_t *data){
       break;
 
     case 4:
-      msg += "Traction Ctrl - Slip|Retard|Cut|Heading";
+      msg += "Traction Ctrl - Slip|Retard|Cut|Heading: ";
       msg += String((data[0] << 8 | data[1])) + ",";
       msg += String((data[2] << 8 | data[3])) + ",";
       msg += String((data[4] << 8 | data[5])) + ",";
@@ -177,7 +207,7 @@ String messageFormatting(uint8_t id, const uint8_t *data){
       break;
 
     case 5:
-      msg += "Shock Sensor FR|FL|RR|RL";
+      msg += "Shock Sensor FR|FL|RR|RL: ";
       msg += String((int16_t)(data[0] << 8 | data[1]) / 1000.0) + ",";
       msg += String((int16_t)(data[2] << 8 | data[3]) / 1000.0) + ",";
       msg += String((int16_t)(data[4] << 8 | data[5]) / 1000.0) + ",";
@@ -185,7 +215,7 @@ String messageFormatting(uint8_t id, const uint8_t *data){
       break;
 
     case 6:
-      msg += "G-force(accel)|(lateral)|Yaw-rate(frontal)|(lateral)";
+      msg += "G-force(accel)|(lateral)|Yaw-rate(frontal)|(lateral): ";
       msg += String((int16_t)(data[0] << 8 | data[1]) / 1000.0) + ",";
       msg += String((int16_t)(data[2] << 8 | data[3]) / 1000.0) + ",";
       msg += String((int16_t)(data[4] << 8 | data[5])) + ",";
@@ -193,7 +223,7 @@ String messageFormatting(uint8_t id, const uint8_t *data){
       break;
 
     case 7:
-      msg += "Lambda Correction|Fuel Flow Total(L/min)|Inj Time Bank(ms) A|B";
+      msg += "Lambda Correction|Fuel Flow Total(L/min)|Inj Time Bank(ms) A|B: ";
       msg += String((data[0] << 8 | data[1])) + ",";
       msg += String((uint16_t)(data[2] << 8 | data[3]) / 100.0) + ",";
       msg += String((uint16_t)(data[4] << 8 | data[5])/ 100.0) + ",";
@@ -201,7 +231,7 @@ String messageFormatting(uint8_t id, const uint8_t *data){
       break;
 
     case 8:
-      msg += "Oil Temp|Transmission Temp(°C)|Fuel Consumption(L)""Brake Pressure(Bar)";
+      msg += "Oil Temp|Transmission Temp(C)|Fuel Consumption(L)""Brake Pressure(Bar): ";
       msg += String((int16_t)(data[0] << 8 | data[1])/ 10.0) + ",";
       msg += String((int16_t)(data[2] << 8 | data[3]) / 10.0) + ",";
       msg += String((int16_t)(data[4] << 8 | data[5])) + ",";
@@ -211,26 +241,25 @@ String messageFormatting(uint8_t id, const uint8_t *data){
     return msg += "\n";
 }
 
+/* Função que realiza o envio/escrita do conteúdo processado dos pacotes
+*/
 void sendBufferData(fs::FS &fs, const char *fileName) {
   String msg;
   msg.reserve(128);
-  for (int i = 0; i < bufferIndex; i++) {
-      msg = messageFormatting(buffer[i].id & 0xFFFFFFE0, buffer[i].data);
-      appendFile(fs, fileName, (msg).c_str());
+  for (int i = 0; i < bufferIndex; i++) {    
+      msg = messageFormatting(buffer[i].id & 0x0000001F, buffer[i].data);
+      appendFile(fs, fileName, (buffer[i].timeLog + " - " +msg).c_str());
     }
     bufferIndex = 0;
 }
 
-unsigned long lastSendTime = 0;
-const unsigned long maxWaitTime = 1000;
-char newFileName[32];
+//================== FIM CAN ==================
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  //================== SD ==================
-
+  //================== SETUP SD ==================
   pinMode(LED, OUTPUT);
 
 #ifdef REASSIGN_PINS
@@ -253,9 +282,9 @@ void setup() {
   uint64_t total = SD.totalBytes();
   uint64_t used = SD.usedBytes();
   uint64_t freeSpaceMiB = (total - used) / (1024 * 1024);
-  Serial.printf("Total: %llu MB\n", total / (1024 * 1024));
-  Serial.printf("Usado: %llu MB\n", used / (1024 * 1024));
-  Serial.printf("Livre: %llu MB\n", freeSpaceMiB);
+  Serial.printf("Total: %llu MiB\n", total / (1024 * 1024));
+  Serial.printf("Usado: %llu MiB\n", used / (1024 * 1024));
+  Serial.printf("Livre: %llu MiB\n", freeSpaceMiB);
 
   if(freeSpaceMiB < 10){
     digitalWrite(LED, HIGH);
@@ -264,24 +293,20 @@ void setup() {
 
   sprintf(newFileName, "/%04u.csv", getLastFileNumber(SD, "/") + 1); // nomeia o próximo
   
-  writeFile(SD, newFileName, "tempo, medida1, medida2, medida3, medida4");  
+  writeFile(SD, newFileName, "tempo, medida1, medida2, medida3, medida4\n");  
   
-  //================== SD ==================
+  //================== SETUP SD ==================
   
   
-  //================== CAN ==================
-  
-  #ifdef REASSIGN_PINS
+  //================== SETUP CAN ==================
+#ifdef REASSIGN_PINS
   CAN.setPins(rx, tx);
-  #endif
-
-  if (!CAN.begin(1E6)) {
+#endif
+  if (!CAN.begin(1E6)) { // Taxa de comunicação da FT550
     Serial.println("Erro ao iniciar CAN");
     return;
   } else
   Serial.println("Logger CAN (FT550) iniciado");
-  
-  //================== CAN ==================
 }
 
 void loop() {
@@ -289,7 +314,6 @@ void loop() {
 
   if (packetSize) {
     uint32_t id = CAN.packetId();
-    //salva pacote
     if (is_ft550_id(id)) {
       CANFrame newFrame;
     
@@ -301,15 +325,14 @@ void loop() {
       while (CAN.available()) {
         newFrame.data[i++] = CAN.read();
       }
-
-      //adiciona o pacote ao buffer
+      // Há, além do critério de espaço, um tempo limite para que um Buffer envie 
+      // o seu conteúdo, para que ele não guarde dados indefinidamente.
       if (bufferIndex < BUFFER_SIZE & (millis() - lastSendTime) < maxWaitTime) {
         buffer[bufferIndex++] = newFrame;
       
       } else {
         sendBufferData(SD ,newFileName);
         lastSendTime = millis();
-        //envia e depois guarda o pacote q não coube
         buffer[0] = newFrame;
         bufferIndex = 1;
       }
