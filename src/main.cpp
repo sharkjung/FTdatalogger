@@ -1,5 +1,8 @@
 #include <Arduino.h>
 #include <CAN.h>
+#include <WiFi.h>
+#include <ESPAsyncWebServer.h>
+#include <AsyncTCP.h>
 #include "FS.h"
 #include "SD.h"
 #include "SPI.h"
@@ -8,9 +11,19 @@
 int sck = 18;
 int miso = 19;
 int mosi = 23;
+int cs = 4;
+int rx = 14;
+int tx = 13;
+
+/*
+PINOS PARA TESTE NA PROTOBOARD
+int sck = 18;
+int miso = 19;
+int mosi = 23;
 int cs = 5;
 int rx = 22;
 int tx = 21;
+*/
 
 #define LED 2
 #define BUFFER_SIZE 10
@@ -18,6 +31,124 @@ int tx = 21;
 unsigned long lastSendTime = 0;
 const unsigned long maxWaitTime = 1000;
 char newFileName[32];
+
+const char* ssid = "ESP32-Logger";
+const char* password = "12345678";
+
+//================== INÍCIO SERVER ==================
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
+
+const char htmlPage[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Formula SAE UFMG Dados FuelTech</title>
+  <script>
+    var ws;
+  
+    function startWebSocket() {
+      ws = new WebSocket("ws://" + location.host + "/ws");
+      ws.onmessage = function(event) {
+        let msg = event.data;
+        let parts = msg.split(":");
+        let id = parts[0];
+        let values = parts[1].split(",");
+  
+        // Adiciona unidades com base no ID
+        let display = "";
+        switch (id) {
+          case "0":
+            display = `${values[0]}%  ${values[1]}BAR  ${values[2]}°C  ${values[3]}°C`;
+            break;
+          case "1":
+            display = `${values[0]}BAR  ${values[1]}BAR ${values[2]}BAR  ${values[3]}`;
+            break;
+          case "2":
+            display = `${values[0]}ƛ  ${values[1]}rpm  ${values[2]}°C  ${values[3]}`;
+            break;
+          case "3":
+            display = `${values[0]}Km/h  ${values[1]}Km/h  ${values[2]}Km/h  ${values[3]}Km/h`;
+            break;
+          case "4":
+            display = `${values[0]}  ${values[1]}  ${values[2]}  ${values[3]}`;
+            break;
+          case "5":
+            display = `${values[0]}  ${values[1]}  ${values[2]}  ${values[3]}`;
+            break;
+          case "6":
+            display = `${values[0]}g  ${values[1]}g  ${values[2]}deg/s  ${values[3]}deg/s`;
+            break;
+          case "7":
+            display = `${values[0]}  ${values[1]}L/min  ${values[2]}ms  ${values[3]}ms`;
+            break;
+          case "8":
+            display = `${values[0]}°C  ${values[1]}°C  ${values[2]}L  ${values[3]}BAR`;
+            break;
+          default:
+            display = values.join(" , ");
+        }
+  
+        document.getElementById(id).innerText = display;
+      };
+    }
+  
+    window.onload = startWebSocket;
+  </script>
+<style>
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background-color: #f9f9f9;
+    }
+    .container {
+      border: 4px solid red;
+      padding: 40px;
+      text-align: center;
+      border-radius: 15px;
+      background-color: white;
+    }
+    h2 {
+      color: red;
+    }
+  </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Dados FuelTech Tempo Real</h2>
+        <P>TPS | MAP | Air Temperature | Engine Temperature</p>
+            <p id="0">N/A</p>
+        <P>Oil Pressure | Fuel Pressure | Water Pressure | Gear</p>
+            <p id="1">N/A</p>
+        <P>Exhaust O2 | RPM | Oil Temperature | Pit Limit</p>
+            <p id="2">N/A</p>    
+        <P>Wheel Speed: FR | FL | RR | RL</p>
+            <p id="3">N/A</p>
+        <P>Traction Ctrl - Slip | Traction Ctrl - Retard | Traction Ctrl - Cut | Heading</p>
+            <p id="4">N/A</p>
+        <P>Shock Sensor: FR | FL | RR | RL</p>
+            <p id="5">N/A</p>
+        <P>G-force (accel) | G-force (lateral) | Yaw-rate (frontal) | Yaw-rate (lateral)</p>
+            <p id="6">N/A</p>
+        <P>Lambda Correction | Fuel Flow Total | Inj Time Bank A | Inj Time Bank B</p>
+            <p id="7">N/A</p>
+        <P>Oil Temperature |Transmission Temperature | Fuel Consumption | Brake Pressure</p>
+            <p id="8">N/A</p>
+    </div>
+</body>
+</html>
+)rawliteral";
+
+void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, 
+                      AwsEventType type, void *arg, uint8_t *data, size_t len) {
+  //Nenhum comportamento específico necessário no momento
+}
+//================== FIM SERVER ==================
 
 //================== INÍCIO SD ==================
 
@@ -164,14 +295,14 @@ bool is_ft550_id(uint32_t id) {
 String messageFormatting(uint8_t id, const uint8_t *data){ 
   String msg;
   msg.reserve(128);
-    
+  msg = "";
   switch (id) {
     case 0:
       msg += "TPS(%)|MAP(BAR)|AirTemp|EngineTemp(C): ";
       msg += String((data[0] << 8 | data[1]) / 10.0) + ",";
       msg += String(uint16_t(data[2] << 8 | data[3]) / 1000.0) + ",";
-      msg += String((int16_t)(data[4] << 8 | data[5]) / 10.0) + ",";
-      msg += String((int16_t)(data[6] << 8 | data[7]) / 10.0);
+      msg += String((int16_t)(data[4] << 8 | data[5]) / 10) + ",";
+      msg += String((int16_t)(data[6] << 8 | data[7]) / 10);
       break;
     
     case 1:
@@ -186,7 +317,7 @@ String messageFormatting(uint8_t id, const uint8_t *data){
       msg += "ExhaustO2(ƛ)|RPM|OilTemp(C)|PitLimit: "; 
       msg += String((uint16_t)(data[0] << 8 | data[1]) / 1000.0) + ",";
       msg += String((uint16_t)(data[2] << 8 | data[3])) + ",";
-      msg += String((int16_t)(data[4] << 8 | data[5]) / 10.0) + ",";
+      msg += String((int16_t)(data[4] << 8 | data[5]) / 10) + ",";
       msg += String((uint16_t)data[6] << 8 | data[7]);
       break;
 
@@ -238,7 +369,7 @@ String messageFormatting(uint8_t id, const uint8_t *data){
       msg += String((uint16_t)(data[6] << 8 | data[7])/ 1000.0);
       break;
     }
-    return msg += "\n";
+    return msg;
 }
 
 /* Função que realiza o envio/escrita do conteúdo processado dos pacotes
@@ -246,9 +377,15 @@ String messageFormatting(uint8_t id, const uint8_t *data){
 void sendBufferData(fs::FS &fs, const char *fileName) {
   String msg;
   msg.reserve(128);
+  uint8_t id; //unsigned char?
   for (int i = 0; i < bufferIndex; i++) {    
-      msg = messageFormatting(buffer[i].id & 0x0000001F, buffer[i].data);
-      appendFile(fs, fileName, (buffer[i].timeLog + " - " +msg).c_str());
+      id = buffer[i].id & 0x1F;
+      msg = messageFormatting(id & 0x0000001F, buffer[i].data);
+      appendFile(fs, fileName, (String(buffer[i].timeLog) + " - " + msg + "\n").c_str());
+      //Parece que o envio não consegue acompanhar a escrita, os últimos dados que são exibidos na página
+      //HTML não são os últimos registrados no SD, com diferença de milisegundos.  
+      ws.textAll(String(id) + ":" + msg.substring(msg.indexOf(":") + 1));
+
     }
     bufferIndex = 0;
 }
@@ -258,6 +395,19 @@ void sendBufferData(fs::FS &fs, const char *fileName) {
 void setup() {
   Serial.begin(115200);
   delay(1000);
+  //================== SETUP SERVER ==================
+  WiFi.softAP(ssid, password);
+  Serial.println("Access Point criado");
+  Serial.println(WiFi.softAPIP());
+
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(200, "text/html", htmlPage);
+  });
+
+  ws.onEvent(onWebSocketEvent);
+  server.addHandler(&ws);
+
+  server.begin();
 
   //================== SETUP SD ==================
   pinMode(LED, OUTPUT);
@@ -277,7 +427,6 @@ void setup() {
     Serial.println("Não há cartão SD inserido");
     return;
   }
-
   
   uint64_t total = SD.totalBytes();
   uint64_t used = SD.usedBytes();
@@ -294,8 +443,6 @@ void setup() {
   sprintf(newFileName, "/%04u.csv", getLastFileNumber(SD, "/") + 1); // nomeia o próximo
   
   writeFile(SD, newFileName, "tempo, medida1, medida2, medida3, medida4\n");  
-  
-  //================== SETUP SD ==================
   
   
   //================== SETUP CAN ==================
@@ -316,7 +463,6 @@ void loop() {
     uint32_t id = CAN.packetId();
     if (is_ft550_id(id)) {
       CANFrame newFrame;
-    
       newFrame.timeLog = millis();
       newFrame.id = id;
       newFrame.dlc = packetSize;
