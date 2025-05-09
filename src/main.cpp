@@ -1,3 +1,5 @@
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+
 #include <Arduino.h>
 #include <CAN.h>
 #include <WiFi.h>
@@ -6,30 +8,32 @@
 #include "FS.h"
 #include "SD.h"
 #include "SPI.h"
+extern "C"{
+  #include "driver/twai.h"
+}
 
-#define REASSIGN_PINS
-int sck = 18;
-int miso = 19;
-int mosi = 23;
-int cs = 4;
-int rx = 14;
-int tx = 13;
+#define SCK_PIN  18
+#define MISO_PIN 19
+#define MOSI_PIN 23
+#define CS_PIN    4
+#define RX_PIN   14
+#define TX_PIN   13
 
 /*
 PINOS PARA TESTE NA PROTOBOARD
-int sck = 18;
-int miso = 19;
-int mosi = 23;
-int cs = 5;
-int rx = 22;
-int tx = 21;
+#define SCK_PIN = 18;
+#define MISO_PIN = 19;
+#define MOSI_PIN = 23;
+#define CS_PIN = 5;
+#define RX_PIN = 22;
+#define TX_PIN = 21;
 */
 
 #define LED 2
-#define BUFFER_SIZE 10
+#define BUFFER_SIZE 5
+#define STRING_RESERVE_SIZE 100
+#define POLLING_RATE_MS 1000
 
-unsigned long lastSendTime = 0;
-const unsigned long maxWaitTime = 1000;
 char newFileName[32];
 
 const char* ssid = "ESP32-Logger";
@@ -42,61 +46,65 @@ AsyncWebSocket ws("/ws");
 const char htmlPage[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
+
 <head>
   <meta charset="UTF-8">
   <title>Formula SAE UFMG Dados FuelTech</title>
   <script>
     var ws;
-  
+
     function startWebSocket() {
       ws = new WebSocket("ws://" + location.host + "/ws");
-      ws.onmessage = function(event) {
+      ws.onmessage = function (event) {
         let msg = event.data;
-        let parts = msg.split(":");
-        let id = parts[0];
-        let values = parts[1].split(",");
-  
+        let parts = msg.split("\n"); //Há um \n no final de msg
+        let idList = parts[0].split("-");
+
         // Adiciona unidades com base no ID
-        let display = "";
-        switch (id) {
-          case "0":
-            display = `${values[0]}%  ${values[1]}BAR  ${values[2]}°C  ${values[3]}°C`;
-            break;
-          case "1":
-            display = `${values[0]}BAR  ${values[1]}BAR ${values[2]}BAR  ${values[3]}`;
-            break;
-          case "2":
-            display = `${values[0]}ƛ  ${values[1]}rpm  ${values[2]}°C  ${values[3]}`;
-            break;
-          case "3":
-            display = `${values[0]}Km/h  ${values[1]}Km/h  ${values[2]}Km/h  ${values[3]}Km/h`;
-            break;
-          case "4":
-            display = `${values[0]}  ${values[1]}  ${values[2]}  ${values[3]}`;
-            break;
-          case "5":
-            display = `${values[0]}  ${values[1]}  ${values[2]}  ${values[3]}`;
-            break;
-          case "6":
-            display = `${values[0]}g  ${values[1]}g  ${values[2]}deg/s  ${values[3]}deg/s`;
-            break;
-          case "7":
-            display = `${values[0]}  ${values[1]}L/min  ${values[2]}ms  ${values[3]}ms`;
-            break;
-          case "8":
-            display = `${values[0]}°C  ${values[1]}°C  ${values[2]}L  ${values[3]}BAR`;
-            break;
-          default:
-            display = values.join(" , ");
-        }
-  
-        document.getElementById(id).innerText = display;
-      };
+        for (let i = 0; i < idList.length; i++) {
+          let values = parts[i + 1].split(":")[1].split(","); //podre
+          let display = "";
+
+          switch (idList[i]) {
+            case "0":
+              display = `${values[0]}%  ${values[1]}BAR  ${values[2]}°C  ${values[3]}°C`;
+              break;
+            case "1":
+              display = `${values[0]}BAR  ${values[1]}BAR ${values[2]}BAR  ${values[3]}`;
+              break;
+            case "2":
+              display = `${values[0]}ƛ  ${values[1]}rpm  ${values[2]}°C  ${values[3]}`;
+              break;
+            case "3":
+              display = `${values[0]}Km/h  ${values[1]}Km/h  ${values[2]}Km/h  ${values[3]}Km/h`;
+              break;
+            case "4":
+              display = `${values[0]}  ${values[1]}  ${values[2]}  ${values[3]}`;
+              break;
+            case "5":
+              display = `${values[0]}  ${values[1]}  ${values[2]}  ${values[3]}`;
+              break;
+            case "6":
+              display = `${values[0]}g  ${values[1]}g  ${values[2]}deg/s  ${values[3]}deg/s`;
+              break;
+            case "7":
+              display = `${values[0]}  ${values[1]}L/min  ${values[2]}ms  ${values[3]}ms`;
+              break;
+            case "8":
+              display = `${values[0]}°C  ${values[1]}°C  ${values[2]}L  ${values[3]}BAR`;
+              break;
+            default:
+              display = values.join(" , ");
+          }
+
+          document.getElementById(id).innerText = display;
+        };
+      }
     }
-  
+
     window.onload = startWebSocket;
   </script>
-<style>
+  <style>
     body {
       display: flex;
       justify-content: center;
@@ -106,6 +114,7 @@ const char htmlPage[] PROGMEM = R"rawliteral(
       font-family: Arial, sans-serif;
       background-color: #f9f9f9;
     }
+
     .container {
       border: 4px solid red;
       padding: 40px;
@@ -113,34 +122,37 @@ const char htmlPage[] PROGMEM = R"rawliteral(
       border-radius: 15px;
       background-color: white;
     }
+
     h2 {
       color: red;
     }
   </style>
 </head>
+
 <body>
-    <div class="container">
-        <h2>Dados FuelTech Tempo Real</h2>
-        <P>TPS | MAP | Air Temperature | Engine Temperature</p>
-            <p id="0">N/A</p>
-        <P>Oil Pressure | Fuel Pressure | Water Pressure | Gear</p>
-            <p id="1">N/A</p>
-        <P>Exhaust O2 | RPM | Oil Temperature | Pit Limit</p>
-            <p id="2">N/A</p>    
-        <P>Wheel Speed: FR | FL | RR | RL</p>
-            <p id="3">N/A</p>
-        <P>Traction Ctrl - Slip | Traction Ctrl - Retard | Traction Ctrl - Cut | Heading</p>
-            <p id="4">N/A</p>
-        <P>Shock Sensor: FR | FL | RR | RL</p>
-            <p id="5">N/A</p>
-        <P>G-force (accel) | G-force (lateral) | Yaw-rate (frontal) | Yaw-rate (lateral)</p>
-            <p id="6">N/A</p>
-        <P>Lambda Correction | Fuel Flow Total | Inj Time Bank A | Inj Time Bank B</p>
-            <p id="7">N/A</p>
-        <P>Oil Temperature |Transmission Temperature | Fuel Consumption | Brake Pressure</p>
-            <p id="8">N/A</p>
-    </div>
+  <div class="container">
+    <h2>Dados FuelTech Tempo Real</h2>
+    <P>TPS | MAP | Air Temperature | Engine Temperature</p>
+    <p id="0">N/A</p>
+    <P>Oil Pressure | Fuel Pressure | Water Pressure | Gear</p>
+    <p id="1">N/A</p>
+    <P>Exhaust O2 | RPM | Oil Temperature | Pit Limit</p>
+    <p id="2">N/A</p>
+    <P>Wheel Speed: FR | FL | RR | RL</p>
+    <p id="3">N/A</p>
+    <P>Traction Ctrl - Slip | Traction Ctrl - Retard | Traction Ctrl - Cut | Heading</p>
+    <p id="4">N/A</p>
+    <P>Shock Sensor: FR | FL | RR | RL</p>
+    <p id="5">N/A</p>
+    <P>G-force (accel) | G-force (lateral) | Yaw-rate (frontal) | Yaw-rate (lateral)</p>
+    <p id="6">N/A</p>
+    <P>Lambda Correction | Fuel Flow Total | Inj Time Bank A | Inj Time Bank B</p>
+    <p id="7">N/A</p>
+    <P>Oil Temperature |Transmission Temperature | Fuel Consumption | Brake Pressure</p>
+    <p id="8">N/A</p>
+  </div>
 </body>
+
 </html>
 )rawliteral";
 
@@ -264,23 +276,22 @@ const int num_ids = sizeof(ft550_ids) / sizeof(ft550_ids[0]);
 
 /* Struct que facilita o processamento dos pacotes
    */
-struct CANFrame {
+struct ft_can_message_t {
   unsigned long timeLog;
   uint32_t id;
   byte data[8];
   uint8_t dlc; //Atualmente, inutilizado
 };
 
-/* Buffer utilizado para mitigar problemas de sobrecarga, a ideia é que o envio/escrita
-   de um frame utilize mais processamento relativo ao envio/escrita de um conjunto de
-   frames ao mesmo tempo.
+/* Buffer utilizado para mitigar problemas de sobrecarga, a intenção é diminuir overhead
+de escrita e envio
 */
-CANFrame buffer[BUFFER_SIZE];
+ft_can_message_t buffer[BUFFER_SIZE];
 int bufferIndex = 0;
 
 /* Função que filtra os pacotes de interesse
 */
-bool is_ft550_id(uint32_t id) {
+bool is_ft_id(uint32_t id) {
   return true;
   for (int i = 0; i < num_ids; i++) {
     if (id == ft550_ids[i]) return true;
@@ -292,10 +303,10 @@ bool is_ft550_id(uint32_t id) {
    a decodificação. É essencial minimizar o tempo gasto na decodificação e envio/escrita, 
    pois novos pacotes que são recebidos pelo controlador podem ser perdidos nesse meio-tempo.
 */
-String messageFormatting(uint8_t id, const uint8_t *data){ 
-  String msg;
-  msg.reserve(128);
-  msg = "";
+String messageFormatting(unsigned long time, uint8_t id, const uint8_t *data){ 
+  static String msg;
+  msg.reserve(STRING_RESERVE_SIZE);
+  msg = String(time) + " - ";
   switch (id) {
     case 0:
       msg += "TPS(%)|MAP(BAR)|AirTemp|EngineTemp(C): ";
@@ -363,31 +374,33 @@ String messageFormatting(uint8_t id, const uint8_t *data){
 
     case 8:
       msg += "Oil Temp|Transmission Temp(C)|Fuel Consumption(L)""Brake Pressure(Bar): ";
-      msg += String((int16_t)(data[0] << 8 | data[1])/ 10.0) + ",";
-      msg += String((int16_t)(data[2] << 8 | data[3]) / 10.0) + ",";
+      msg += String((int16_t)(data[0] << 8 | data[1])/ 10) + ",";
+      msg += String((int16_t)(data[2] << 8 | data[3]) / 10) + ",";
       msg += String((int16_t)(data[4] << 8 | data[5])) + ",";
       msg += String((uint16_t)(data[6] << 8 | data[7])/ 1000.0);
       break;
     }
-    return msg;
+    return msg + "\n";
 }
 
 /* Função que realiza o envio/escrita do conteúdo processado dos pacotes
 */
 void sendBufferData(fs::FS &fs, const char *fileName) {
-  String msg;
-  msg.reserve(128);
-  uint8_t id; //unsigned char?
+  static String msg;
+  String idList;
+  msg.reserve(BUFFER_SIZE * STRING_RESERVE_SIZE); //será feito apenas na 1a chamada
+  msg = "";
+  
+  uint8_t id;
   for (int i = 0; i < bufferIndex; i++) {    
       id = buffer[i].id & 0x1F;
-      msg = messageFormatting(id & 0x0000001F, buffer[i].data);
-      appendFile(fs, fileName, (String(buffer[i].timeLog) + " - " + msg + "\n").c_str());
-      //Parece que o envio não consegue acompanhar a escrita, os últimos dados que são exibidos na página
-      //HTML não são os últimos registrados no SD, com diferença de milisegundos.  
-      ws.textAll(String(id) + ":" + msg.substring(msg.indexOf(":") + 1));
-
-    }
-    bufferIndex = 0;
+      msg += messageFormatting(buffer[i].timeLog, id, buffer[i].data);
+      idList += id + "-";
+  }
+  idList.remove(idList.length() - 1) //Remove o último "-"
+  appendFile(fs, fileName, msg.c_str());
+  ws.textAll(idList + "\n" + msg);
+  bufferIndex = 0;
 }
 
 //================== FIM CAN ==================
@@ -412,12 +425,8 @@ void setup() {
   //================== SETUP SD ==================
   pinMode(LED, OUTPUT);
 
-#ifdef REASSIGN_PINS
-  SPI.begin(sck, miso, mosi, cs);
-  if (!SD.begin(cs)) {
-#else
-  if (!SD.begin()) {
-#endif
+  SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CS_PIN);
+  if (!SD.begin(CS_PIN)) {
     Serial.println("A conexão com o cartão falhou");
     return;
   }
@@ -445,43 +454,76 @@ void setup() {
   writeFile(SD, newFileName, "tempo, medida1, medida2, medida3, medida4\n");  
   
   
-  //================== SETUP CAN ==================
-#ifdef REASSIGN_PINS
-  CAN.setPins(rx, tx);
-#endif
-  if (!CAN.begin(1E6)) { // Taxa de comunicação da FT550
-    Serial.println("Erro ao iniciar CAN");
+  //================== SETUP TWAI ==================
+  twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)TX_PIN, (gpio_num_t)RX_PIN, TWAI_MODE_LISTEN_ONLY);
+  twai_timing_config_t t_config = TWAI_TIMING_CONFIG_1MBITS(); 
+  twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+
+  // Instala o driver TWAI
+  if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK) {
+    Serial.println("Driver instalado");
+  } else {
+    Serial.println("Falha ao instalar o driver");
     return;
-  } else
-  Serial.println("Logger CAN (FT550) iniciado");
+  }
+
+  // Inicia driver TWAI
+  if (twai_start() == ESP_OK) {
+    Serial.println("Driver iniciado");
+  } else {
+    Serial.println("Falha ao iniciar o driver");
+    return;
+  }
+
+  // Reconfigura alertas
+  uint32_t alerts_to_enable = TWAI_ALERT_RX_DATA | TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_BUS_ERROR;
+  if (twai_reconfigure_alerts(alerts_to_enable, NULL) == ESP_OK) {
+    Serial.println("Alertas CAN reconfigurados");
+  } else {
+    Serial.println("Falha ao reconfigurar alertas");
+    return;
+  }
+
+}
+
+static void handle_rx_message(twai_message_t &message) {
+  if(!(message.rtr) && is_ft_id(message.identifier)){
+      ft_can_message_t ftMessage;
+      ftMessage.id = message.identifier;
+      ftMessage.timeLog = millis();
+      for(int i = 0; i < message.data_length_code; i++){
+        ftMessage.data[i] = message.data[i];
+      }
+      buffer[bufferIndex++] = ftMessage;
+  }
 }
 
 void loop() {
-  int packetSize = CAN.parsePacket();
+  uint32_t alerts_triggered;
+  twai_read_alerts(&alerts_triggered, pdMS_TO_TICKS(POLLING_RATE_MS));
+  twai_status_info_t twaistatus;
+  twai_get_status_info(&twaistatus);
 
-  if (packetSize) {
-    uint32_t id = CAN.packetId();
-    if (is_ft550_id(id)) {
-      CANFrame newFrame;
-      newFrame.timeLog = millis();
-      newFrame.id = id;
-      newFrame.dlc = packetSize;
-      
-      int i = 0;
-      while (CAN.available()) {
-        newFrame.data[i++] = CAN.read();
-      }
-      // Há, além do critério de espaço, um tempo limite para que um Buffer envie 
-      // o seu conteúdo, para que ele não guarde dados indefinidamente.
-      if (bufferIndex < BUFFER_SIZE & (millis() - lastSendTime) < maxWaitTime) {
-        buffer[bufferIndex++] = newFrame;
-      
-      } else {
-        sendBufferData(SD ,newFileName);
-        lastSendTime = millis();
-        buffer[0] = newFrame;
-        bufferIndex = 1;
-      }
+  if (alerts_triggered & TWAI_ALERT_BUS_ERROR) {
+    Serial.println("Alert: A (Bit, Stuff, CRC, Form, ACK) error has occurred on the bus.");
+    Serial.printf("Bus error count: %lu\n", twaistatus.bus_error_count);
+  }
+  if (alerts_triggered & TWAI_ALERT_RX_QUEUE_FULL) {
+    Serial.println("Alert: The RX queue is full causing a received frame to be lost.");
+    Serial.printf("RX buffered: %lu\t", twaistatus.msgs_to_rx);
+    Serial.printf("RX missed: %lu\t", twaistatus.rx_missed_count);
+    Serial.printf("RX overrun %lu\n", twaistatus.rx_overrun_count);
+  }
+
+  if (alerts_triggered & TWAI_ALERT_RX_DATA) {
+    // Uma ou mais mensagens recebidas, processa todas
+    twai_message_t message;
+    while (twai_receive(&message, 0) == ESP_OK && bufferIndex < BUFFER_SIZE) {
+      handle_rx_message(message);
     }
+  }
+
+  if (bufferIndex > 0) {
+    sendBufferData(SD, newFileName);
   }
 }
