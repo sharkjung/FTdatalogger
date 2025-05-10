@@ -19,16 +19,14 @@ extern "C"{
 #define RX_PIN   14
 #define TX_PIN   13
 
-/*
-PINOS PARA TESTE NA PROTOBOARD
-#define SCK_PIN = 18;
-#define MISO_PIN = 19;
-#define MOSI_PIN = 23;
-#define CS_PIN = 5;
-#define RX_PIN = 22;
-#define TX_PIN = 21;
+/*PINOS PARA TESTE NA PROTOBOARD
+#define SCK_PIN 18
+#define MISO_PIN 19
+#define MOSI_PIN 23
+#define CS_PIN 5
+#define RX_PIN 22
+#define TX_PIN 21
 */
-
 #define LED 2
 #define BUFFER_SIZE 5
 #define STRING_RESERVE_SIZE 100
@@ -57,11 +55,11 @@ const char htmlPage[] PROGMEM = R"rawliteral(
       ws = new WebSocket("ws://" + location.host + "/ws");
       ws.onmessage = function (event) {
         let msg = event.data;
-        let parts = msg.split("\n"); //Há um \n no final de msg
+        let parts = msg.split("\n");
         let idList = parts[0].split("-");
 
         // Adiciona unidades com base no ID
-        for (let i = 0; i < idList.length; i++) {
+        for (let i = 0; i < (idList.length - 1); i++) { // (* - 1) há um elemento vazio por causa do "-" extra
           let values = parts[i + 1].split(":")[1].split(","); //podre
           let display = "";
 
@@ -97,7 +95,7 @@ const char htmlPage[] PROGMEM = R"rawliteral(
               display = values.join(" , ");
           }
 
-          document.getElementById(id).innerText = display;
+          document.getElementById(idList[i]).innerText = display;
         };
       }
     }
@@ -390,15 +388,12 @@ void sendBufferData(fs::FS &fs, const char *fileName) {
   String idList;
   msg.reserve(BUFFER_SIZE * STRING_RESERVE_SIZE); //será feito apenas na 1a chamada
   msg = "";
-  
   uint8_t id;
   for (int i = 0; i < bufferIndex; i++) {    
       id = buffer[i].id & 0x1F;
       msg += messageFormatting(buffer[i].timeLog, id, buffer[i].data);
-      idList += id + "-";
+      idList += String(id) + "-";
   }
-  idList.remove(idList.length() - 1) //Remove o último "-"
-  appendFile(fs, fileName, msg.c_str());
   ws.textAll(idList + "\n" + msg);
   bufferIndex = 0;
 }
@@ -456,6 +451,7 @@ void setup() {
   
   //================== SETUP TWAI ==================
   twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)TX_PIN, (gpio_num_t)RX_PIN, TWAI_MODE_LISTEN_ONLY);
+  g_config.rx_queue_len = 10;
   twai_timing_config_t t_config = TWAI_TIMING_CONFIG_1MBITS(); 
   twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
@@ -487,15 +483,13 @@ void setup() {
 }
 
 static void handle_rx_message(twai_message_t &message) {
-  if(!(message.rtr) && is_ft_id(message.identifier)){
-      ft_can_message_t ftMessage;
-      ftMessage.id = message.identifier;
-      ftMessage.timeLog = millis();
-      for(int i = 0; i < message.data_length_code; i++){
-        ftMessage.data[i] = message.data[i];
-      }
-      buffer[bufferIndex++] = ftMessage;
+  ft_can_message_t ftMessage;
+  ftMessage.id = message.identifier;
+  ftMessage.timeLog = millis();
+  for(int i = 0; i < message.data_length_code; i++){
+    ftMessage.data[i] = message.data[i];
   }
+  buffer[bufferIndex++] = ftMessage;
 }
 
 void loop() {
@@ -519,11 +513,13 @@ void loop() {
     // Uma ou mais mensagens recebidas, processa todas
     twai_message_t message;
     while (twai_receive(&message, 0) == ESP_OK && bufferIndex < BUFFER_SIZE) {
-      handle_rx_message(message);
+      if(is_ft_id(message.identifier) && !message.rtr){ //Sender enviava como rtr 
+        handle_rx_message(message);
+      }
     }
   }
 
-  if (bufferIndex > 0) {
+  if (bufferIndex == BUFFER_SIZE) {
     sendBufferData(SD, newFileName);
   }
 }

@@ -9,17 +9,18 @@
 
   created 27-06-2023 by Stephan Martin (designer2k2)
 */
-
-#include "driver/twai.h"
-
+#include <Arduino.h>
+extern "C"{
+  #include "driver/twai.h"
+}
 // Pins used to connect to CAN bus transceiver:
-#define RX_PIN 21
-#define TX_PIN 22
+#define RX_PIN 4
+#define TX_PIN 5
 
 // Interval:
-#define TRANSMIT_RATE_MS 1000
+#define TRANSMIT_RATE_MS 10
 
-#define POLLING_RATE_MS 1000
+#define POLLING_RATE_MS 0
 
 static bool driver_installed = false;
 
@@ -30,8 +31,8 @@ void setup() {
   Serial.begin(115200);
 
   // Initialize configuration structures using macro initializers
-  twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)TX_PIN, (gpio_num_t)RX_PIN, TWAI_MODE_NORMAL);
-  twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();  //Look in the api-reference for other speed sets.
+  twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)TX_PIN, (gpio_num_t)RX_PIN, TWAI_MODE_NO_ACK);
+  twai_timing_config_t t_config = TWAI_TIMING_CONFIG_1MBITS();  //Look in the api-reference for other speed sets.
   twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
   // Install TWAI driver
@@ -69,6 +70,7 @@ static void send_message() {
   twai_message_t message;
   message.identifier = 0x14080600 + random(0, 9);
   message.data_length_code = 8;
+  message.flags = 0;
   byte messageByte;
   for (int i = 0; i < 8; i++) {
     byte messageByte = random(0, 255);
