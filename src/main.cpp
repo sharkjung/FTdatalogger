@@ -1,7 +1,6 @@
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 
 #include <Arduino.h>
-#include <CAN.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
@@ -28,9 +27,10 @@ extern "C"{
 #define TX_PIN 21
 */
 #define LED 2
-#define BUFFER_SIZE 5
+#define BUFFER_SIZE 10
 #define STRING_RESERVE_SIZE 100
-#define POLLING_RATE_MS 1000
+#define POLLING_RATE_MS 1
+#define MINIMUM_FREE_SPACE_MiB 10
 
 char newFileName[32];
 
@@ -54,12 +54,14 @@ const char htmlPage[] PROGMEM = R"rawliteral(
     function startWebSocket() {
       ws = new WebSocket("ws://" + location.host + "/ws");
       ws.onmessage = function (event) {
+        //Separa as mensagens em listas para tratar os dados
         let msg = event.data;
         let parts = msg.split("\n");
+        //A primeira linha carrega os IDs
         let idList = parts[0].split("-");
 
         // Adiciona unidades com base no ID
-        for (let i = 0; i < (idList.length - 1); i++) { // (* - 1) há um elemento vazio por causa do "-" extra
+        for (let i = 0; i < (idList.length - 1); i++) { // A iteração ignora o último elemento, pois ele é vazio por causa de um "-" extra
           let values = parts[i + 1].split(":")[1].split(","); //podre
           let display = "";
 
@@ -129,6 +131,7 @@ const char htmlPage[] PROGMEM = R"rawliteral(
 
 <body>
   <div class="container">
+    // Os IDs dos parágrafos correspondem aos IDs dos pacotes simplificados
     <h2>Dados FuelTech Tempo Real</h2>
     <P>TPS | MAP | Air Temperature | Engine Temperature</p>
     <p id="0">N/A</p>
@@ -154,6 +157,7 @@ const char htmlPage[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
+//Função chamada por ws para lidar com eventos 
 void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, 
                       AwsEventType type, void *arg, uint8_t *data, size_t len) {
   //Nenhum comportamento específico necessário no momento
@@ -170,18 +174,20 @@ bool freeSpace(fs::SDFS &fs, const char *dirname, uint8_t minFree, uint64_t &fre
     return true;
   }
 
+  // Abre em root o diretório com o nome passado como argumento
   File root = fs.open(dirname);
   if (!root || !root.isDirectory()) {
     Serial.println("Erro ao abrir diretório.");
     return false;
   }
 
-  File file = root.openNextFile();
+  File file = root.openNextFile(); // Abre o primeiro arquivo no filesystem
   while (file) {
     Serial.printf("Deletando arquivo: %s\n", file.name());
     if (fs.remove(file.name())) {
       Serial.println("Arquivo deletado");
 
+      //Verifica se a remoção liberou o espaço necessário
       freeSpace = (fs.totalBytes() - fs.usedBytes()) / (1024 * 1024);
       if (freeSpace >= minFree) {
         file.close();
@@ -189,10 +195,11 @@ bool freeSpace(fs::SDFS &fs, const char *dirname, uint8_t minFree, uint64_t &fre
         return true;
       }
     } else {
+      // Não há tratamento para falhas
       Serial.println("Falha ao deletar");
     }
     file.close();
-    file = root.openNextFile();
+    file = root.openNextFile(); //Se falhar, o loop não se repete
   }
 
   root.close();
@@ -219,11 +226,15 @@ void appendFile(fs::FS &fs, const char *path, const char *message) {
   file.close();
 }
 
-/* Função que retorna o nome que deve ser númerico do último arquivo criado
+/* Função que retorna o nome, que deve ser númerico, do último arquivo criado
    Os arquivos são todos numerados sequencialmente com base na sua criação,
    isso permite que os arquivos de menor número (os mais antigos), sejam deletados
    primeiros do microSD quando não houver o espaço livre definido. */
 uint32_t getLastFileNumber(fs::FS &fs, const char *dirname) {
+  /*Essa função deve ser sempre chamada após a liberação de espaço,
+    pois *.openNextFile() retornará um file vazio se chegar ao final 
+    do sistema de arquivos.
+  */
   File root = fs.open(dirname);
   if (!root || !root.isDirectory()) {
     Serial.println("Erro ao abrir diretório");
@@ -232,6 +243,7 @@ uint32_t getLastFileNumber(fs::FS &fs, const char *dirname) {
 
   uint32_t lastNumber = 0;
   File file = root.openNextFile();
+  //Itera por todos arquivos para achar o maior número
   while (file) {
       String name = String(file.name());
       name = name.substring(0, name.indexOf('.'));
@@ -253,8 +265,8 @@ uint32_t getLastFileNumber(fs::FS &fs, const char *dirname) {
 
 /* Atualmente o programa só decodifica pacotes com esses IDs, que são os pacotes
    simplificados da FT, já que a decodificação do protocolo CAN FT é muito complexa
-   e talvez nem ideal para um ESP32, já que provavelmente gastaria processamento que
-   deveria ser utilizado para receber mensagens brutas.
+   e talvez nem ideal para ser feita no ESP32, já que provavelmente gastaria 
+   processamento que deveria ser utilizado para apenas receber as mensagens não decodificadas.
    Apesar da especificidade, o programa está suficientemente versátil para uma implementação, 
    sem muito atrito, de lógica de decodificação para outros tipos de pacotes.
    */
@@ -270,6 +282,7 @@ const uint32_t ft550_ids[] = {
   0x14080608
 };
 
+// Quantidade de IDs que são processados pelo programa
 const int num_ids = sizeof(ft550_ids) / sizeof(ft550_ids[0]);
 
 /* Struct que facilita o processamento dos pacotes
@@ -287,10 +300,9 @@ de escrita e envio
 ft_can_message_t buffer[BUFFER_SIZE];
 int bufferIndex = 0;
 
-/* Função que filtra os pacotes de interesse
-*/
-bool is_ft_id(uint32_t id) {
-  return true;
+// Função que filtra os pacotes de interesse
+bool is_ft_id(uint32_t &id) {
+  // A iteração é rápida suficiente para a quantidade atual de ids
   for (int i = 0; i < num_ids; i++) {
     if (id == ft550_ids[i]) return true;
   }
@@ -381,23 +393,28 @@ String messageFormatting(unsigned long time, uint8_t id, const uint8_t *data){
     return msg + "\n";
 }
 
-/* Função que realiza o envio/escrita do conteúdo processado dos pacotes
+/* Função que realiza a transmissão/escrita do conteúdo processado dos pacotes
 */
 void sendBufferData(fs::FS &fs, const char *fileName) {
   static String msg;
-  String idList;
+  static String idList; //lista com ids para a primeira linha da string enviada pelo servidor
   msg.reserve(BUFFER_SIZE * STRING_RESERVE_SIZE); //será feito apenas na 1a chamada
+  idList.reserve(BUFFER_SIZE * 3); //será feito apenas na 1a chamada
   msg = "";
+  idList = "";
   uint8_t id;
-  for (int i = 0; i < bufferIndex; i++) {    
+  //Lê e processa conteúdo das mensagens
+  for (int i = 0; i < bufferIndex; i++) {
       id = buffer[i].id & 0x1F;
       msg += messageFormatting(buffer[i].timeLog, id, buffer[i].data);
       idList += String(id) + "-";
   }
+  //Escreve string no microsd
+  appendFile(fs, fileName, msg.c_str());
+  //Envia string via websocket
   ws.textAll(idList + "\n" + msg);
   bufferIndex = 0;
 }
-
 //================== FIM CAN ==================
 
 void setup() {
@@ -408,10 +425,12 @@ void setup() {
   Serial.println("Access Point criado");
   Serial.println(WiFi.softAPIP());
 
+  //handler para requisição get http
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send(200, "text/html", htmlPage);
   });
 
+  //handler para websocket
   ws.onEvent(onWebSocketEvent);
   server.addHandler(&ws);
 
@@ -419,19 +438,21 @@ void setup() {
 
   //================== SETUP SD ==================
   pinMode(LED, OUTPUT);
-
+  // inicia conexão spi com o leitor do microSD
   SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CS_PIN);
   if (!SD.begin(CS_PIN)) {
     Serial.println("A conexão com o cartão falhou");
     return;
   }
-  uint8_t cardType = SD.cardType();
 
+  //Reconhece tipo do cartão SD
+  uint8_t cardType = SD.cardType();
   if (cardType == CARD_NONE) {
     Serial.println("Não há cartão SD inserido");
     return;
   }
-  
+
+  //Leitura do espaço no cartão
   uint64_t total = SD.totalBytes();
   uint64_t used = SD.usedBytes();
   uint64_t freeSpaceMiB = (total - used) / (1024 * 1024);
@@ -439,19 +460,24 @@ void setup() {
   Serial.printf("Usado: %llu MiB\n", used / (1024 * 1024));
   Serial.printf("Livre: %llu MiB\n", freeSpaceMiB);
 
-  if(freeSpaceMiB < 10){
+  //Libera o espaço livre mínimo, se necessário
+  if(freeSpaceMiB < MINIMUM_FREE_SPACE_MiB){
+    //O led se manterá aceso enquanto ESP32 permanecer ligado
     digitalWrite(LED, HIGH);
-    freeSpace(SD, "/", 10, freeSpaceMiB);
+    freeSpace(SD, "/", MINIMUM_FREE_SPACE_MiB, freeSpaceMiB);
   }
 
-  sprintf(newFileName, "/%04u.csv", getLastFileNumber(SD, "/") + 1); // nomeia o próximo
-  
+  //formatação do nome do novo arquivo
+  sprintf(newFileName, "/%04u.csv", getLastFileNumber(SD, "/") + 1);
+  //escreve novo arquivo
   writeFile(SD, newFileName, "tempo, medida1, medida2, medida3, medida4\n");  
   
   
   //================== SETUP TWAI ==================
+  //Configura pinos twai, modo listener e tamanho da fila 
   twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)TX_PIN, (gpio_num_t)RX_PIN, TWAI_MODE_LISTEN_ONLY);
-  g_config.rx_queue_len = 10;
+  g_config.rx_queue_len = 250;
+  //baud ft can
   twai_timing_config_t t_config = TWAI_TIMING_CONFIG_1MBITS(); 
   twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
@@ -482,6 +508,7 @@ void setup() {
 
 }
 
+//salva mensagem em ft_can_message_t
 static void handle_rx_message(twai_message_t &message) {
   ft_can_message_t ftMessage;
   ftMessage.id = message.identifier;
@@ -494,10 +521,12 @@ static void handle_rx_message(twai_message_t &message) {
 
 void loop() {
   uint32_t alerts_triggered;
+  // espera por alertas
   twai_read_alerts(&alerts_triggered, pdMS_TO_TICKS(POLLING_RATE_MS));
   twai_status_info_t twaistatus;
   twai_get_status_info(&twaistatus);
 
+  //tratamento de alertas
   if (alerts_triggered & TWAI_ALERT_BUS_ERROR) {
     Serial.println("Alert: A (Bit, Stuff, CRC, Form, ACK) error has occurred on the bus.");
     Serial.printf("Bus error count: %lu\n", twaistatus.bus_error_count);
@@ -513,13 +542,13 @@ void loop() {
     // Uma ou mais mensagens recebidas, processa todas
     twai_message_t message;
     while (twai_receive(&message, 0) == ESP_OK && bufferIndex < BUFFER_SIZE) {
-      if(is_ft_id(message.identifier) && !message.rtr){ //Sender enviava como rtr 
+      if(is_ft_id(message.identifier) && !message.rtr){ 
         handle_rx_message(message);
       }
     }
   }
-
-  if (bufferIndex == BUFFER_SIZE) {
+  //esvazia buffer se estiver cheio
+  if (bufferIndex >= BUFFER_SIZE) {
     sendBufferData(SD, newFileName);
   }
 }
